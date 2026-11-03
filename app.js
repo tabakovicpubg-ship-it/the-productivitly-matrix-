@@ -12,6 +12,8 @@ const ZONE_INFO = {
   desk: ['THE DESK', 'not on the board yet'],
 };
 const STORM_CHOICES = [15, 30, 45, 60];
+const MIN_SIZE = 0.5;
+const MAX_SIZE = 1.8;
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -28,6 +30,8 @@ let pan = null;
 let panMoved = false;
 let glide = 0;
 let drag = null;
+let pinch = null;
+let gesture = null;
 let stormMinutes = 45;
 let wake = null;
 let onSheetAct = null;
@@ -125,7 +129,10 @@ function render() {
     if (s.doneAt) continue;
     $(`[data-zone="${s.zone}"]`)?.append(buildScrap(s));
   }
-  $$('[data-zone] > .scrap').forEach(fit);
+  for (const el of $$('[data-zone] > .scrap')) {
+    fit(el);
+    dressScrap(el);
+  }
   $('#pile-count').textContent = state.scraps.filter(s => s.doneAt).length;
 }
 
@@ -139,9 +146,10 @@ function buildScrap(s) {
   el.setAttribute('role', 'button');
   el.setAttribute('aria-label', `${s.text}${today ? `, gave in ${today} time${today === 1 ? '' : 's'} today` : ''}${hasDetails ? ', has details' : ''}`);
   el.style.setProperty('--r', `${s.r}deg`);
+  el.style.setProperty('--size', s.size || 1);
   el.style.left = `${s.x * 100}%`;
   el.style.top = `${s.y * 100}%`;
-  el.innerHTML = `<div class="cut" style="clip-path: ${edge(s.id, hasDetails)}"><span class="ink">${esc(s.text)}${
+  el.innerHTML = `<div class="cut"><span class="ink">${esc(s.text)}${
     s.zone === 'blue' && s.delegate ? '<span class="flag">DELEGATE?</span>' : ''}${
     today ? `<span class="tally">${tallyMarks(today, s.id)}</span>` : ''}</span></div>`;
   return el;
@@ -156,14 +164,138 @@ function fit(el) {
   el.style.top = `${Math.min(s.y, maxY) * 100}%`;
 }
 
-// Slightly uneven scissor cuts. Scraps with details get a folded-down corner.
-function edge(id, dogEar = false) {
-  const r = rng(hash(id) ^ 0x9e37);
-  const [a, b, c, d, e, f, g, h] = Array.from({ length: 8 }, () => Math.round(r() * 4));
-  const corner = dogEar
-    ? `calc(100% - ${e}px) calc(100% - 13px), calc(100% - 13px) calc(100% - ${f}px)`
-    : `calc(100% - ${e}px) calc(100% - ${f}px)`;
-  return `polygon(${a}px ${b}px, calc(100% - ${c}px) ${d}px, ${corner}, ${g}px calc(100% - ${h}px))`;
+// Resize a scrap around its middle, so it shrinks in place instead of toward a corner.
+function setSize(el, size) {
+  const s = find(el.dataset.id), zone = el.parentElement;
+  const w0 = el.offsetWidth, h0 = el.offsetHeight;
+  s.size = Math.round(clamp(size, MIN_SIZE, MAX_SIZE) * 100) / 100;
+  el.style.setProperty('--size', s.size);
+  const w1 = el.offsetWidth, h1 = el.offsetHeight;
+  s.x = clamp(s.x - (w1 - w0) / 2 / zone.clientWidth, 0, Math.max(0, 1 - w1 / zone.clientWidth));
+  s.y = clamp(s.y - (h1 - h0) / 2 / zone.clientHeight, 0, Math.max(0, 1 - h1 / zone.clientHeight));
+  fit(el);
+  dressScrap(el);
+  save();
+}
+
+/* ---------- hand-drawn lines and scissor cuts ---------- */
+
+const r1 = n => Math.round(n * 10) / 10;
+
+// One marker stroke from (x1, y1) to (x2, y2), the way a hand draws it: the ends
+// overshoot or stop a little short, and longer lines drift and bow.
+function stroke(x1, y1, x2, y2, r, wob) {
+  const len = Math.hypot(x2 - x1, y2 - y1) || 1;
+  const ux = (x2 - x1) / len, uy = (y2 - y1) / len;
+  const nx = -uy, ny = ux;
+  const steps = Math.max(1, Math.round(len / 90));
+  const pts = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const drift = (r() - 0.5) * wob * (i === 0 || i === steps ? 1 : 1.5);
+    let x = x1 + (x2 - x1) * t + nx * drift;
+    let y = y1 + (y2 - y1) * t + ny * drift;
+    if (i === 0 || i === steps) {
+      const over = (r() * 1.7 - 0.4) * wob * (i === 0 ? -1 : 1);
+      x += ux * over;
+      y += uy * over;
+    }
+    pts.push([x, y]);
+  }
+  if (pts.length === 2) {
+    const bow = (r() - 0.5) * wob * 1.2;
+    const [[ax, ay], [bx, by]] = pts;
+    return `M${r1(ax)} ${r1(ay)} Q${r1((ax + bx) / 2 + nx * bow)} ${r1((ay + by) / 2 + ny * bow)} ${r1(bx)} ${r1(by)}`;
+  }
+  let d = `M${r1(pts[0][0])} ${r1(pts[0][1])}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const [x, y] = pts[i], [x2n, y2n] = pts[i + 1];
+    d += ` Q${r1(x)} ${r1(y)} ${r1((x + x2n) / 2)} ${r1((y + y2n) / 2)}`;
+  }
+  const [lx, ly] = pts[pts.length - 1];
+  return `${d} L${r1(lx)} ${r1(ly)}`;
+}
+
+// Draws a hand-drawn rectangle inside `el` as an SVG overlay sized to it. `frames`
+// lists the insets (the title gets two frames); `passes` > 1 goes over the lines
+// again for a thicker, uneven marker look.
+function sketch(el, { inset = 1.5, frames = [inset], wob = 1.4, width = 2.4, passes = 1, dotted = false } = {}) {
+  const w = el.offsetWidth, h = el.offsetHeight;
+  if (!w || !h) return;
+  const r = rng(hash(el.dataset.seed || el.textContent || 'x'));
+  let paths = '';
+  for (const i of frames) {
+    for (let p = 0; p < passes; p++) {
+      const wb = wob * (p ? 0.75 : 1);
+      paths += `<path d="${stroke(i, i, w - i, i, r, wb)} ${stroke(w - i, i, w - i, h - i, r, wb)} ${stroke(w - i, h - i, i, h - i, r, wb)} ${stroke(i, h - i, i, i, r, wb)}"/>`;
+    }
+  }
+  let svg = el.querySelector(':scope > svg.sketch');
+  if (!svg) {
+    svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', `sketch${dotted ? ' dotted' : ''}`);
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('preserveAspectRatio', 'none');
+    el.append(svg);
+  }
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.style.strokeWidth = `${width}px`;
+  svg.innerHTML = paths;
+}
+
+// An uneven scissor cut around a w×h piece of paper: small nicks along each edge
+// and corners that are never quite square. Scraps with details get a folded corner.
+function scissorCut(w, h, seed, { amp = 3, dogEar = false } = {}) {
+  const r = rng(hash(String(seed)) ^ 0x51ed);
+  const j = () => r1(r() * amp);
+  const pts = [];
+  const nicks = (len, at) => {
+    const n = Math.max(1, Math.round(len / 55));
+    for (let i = 1; i < n; i++) pts.push(at((i + (r() - 0.5) * 0.4) / n));
+  };
+  pts.push([j(), j()]);
+  nicks(w, t => [r1(w * t), j()]);
+  pts.push([r1(w - j()), j()]);
+  nicks(h, t => [r1(w - j()), r1(h * t)]);
+  if (dogEar) pts.push([r1(w - j()), h - 13], [w - 13, r1(h - j())]);
+  else pts.push([r1(w - j()), r1(h - j())]);
+  nicks(w, t => [r1(w - w * t), r1(h - j())]);
+  pts.push([j(), r1(h - j())]);
+  nicks(h, t => [j(), r1(h - h * t)]);
+  return `polygon(${pts.map(([x, y]) => `${x}px ${y}px`).join(', ')})`;
+}
+
+function dressScrap(el) {
+  const cut = $('.cut', el), id = el.dataset.id || 'hero';
+  cut.style.clipPath = scissorCut(cut.offsetWidth, cut.offsetHeight, id, { dogEar: el.classList.contains('has-details') });
+  const ink = $('.ink', el);
+  ink.dataset.seed = id;
+  sketch(ink, { inset: 1.5, wob: 1.3, width: 2.2, passes: 2 });
+}
+
+// Black paper labels and paper buttons: cut out, then framed in pen.
+function dressTag(el) {
+  if (!el.offsetWidth) return;
+  const ghost = el.classList.contains('btn-ghost');
+  if (!ghost) el.style.clipPath = scissorCut(el.offsetWidth, el.offsetHeight, el.dataset.seed || el.textContent, { amp: 2.5 });
+  sketch(el, ghost ? { inset: 2, wob: 1.2, width: 2.2, dotted: true } : { inset: 5, wob: 1.2, width: 1.8 });
+}
+
+function sketchBoard(root = document) {
+  $$('.tag, .btn', root).forEach(dressTag);
+  for (const el of $$('.note', root)) {
+    el.style.clipPath = scissorCut(el.offsetWidth, el.offsetHeight, el.textContent, { amp: 2.5 });
+    sketch(el, { inset: 5.5, wob: 1.3, width: 2.4, dotted: true });
+  }
+  for (const el of $$('.title', root)) sketch(el, { frames: [2, 10], wob: 2.4, width: 2.6 });
+}
+
+// Changing a label's text wipes its drawn frame, so redraw it.
+function setLabel(el, text) {
+  if (el.dataset.label === text) return;
+  el.dataset.label = text;
+  el.textContent = text;
+  dressTag(el);
 }
 
 // Hand-drawn tally marks in groups of five.
@@ -211,6 +343,7 @@ function zoomTo(zone) {
   poster.classList.remove('panning');
   zoomed = zone;
   $('#zoom-out').hidden = !zone;
+  if (zone) dressTag($('#zoom-out'));
   if (!zone) {
     // Keep clipping until the camera has pulled all the way back.
     cam = null;
@@ -240,7 +373,7 @@ function aim(tx, ty, smooth) {
 /* ---------- moving around while zoomed in ---------- */
 
 function startPan(e) {
-  if (!cam || e.button > 0 || e.target.closest('.scrap, button')) return;
+  if (!cam || drag || pinch || e.button > 0 || e.target.closest('.scrap, button')) return;
   cancelAnimationFrame(glide);
   panMoved = false;
   pan = { pid: e.pointerId, x0: e.clientX, y0: e.clientY, tx: cam.tx, ty: cam.ty, lx: e.clientX, ly: e.clientY, lt: e.timeStamp, vx: 0, vy: 0, moved: false };
@@ -324,20 +457,77 @@ function endDrag() {
   const d = drag;
   drag = null;
   document.body.classList.remove('dragging');
+  document.documentElement.classList.remove('holding');
   d.hot?.classList.remove('hot');
   return d;
 }
 
+/* ---------- pinching a scrap to resize it ---------- */
+
+function spread(pts) {
+  const [[ax, ay], [bx, by]] = [...pts.values()];
+  return Math.hypot(bx - ax, by - ay);
+}
+
+// A second finger while holding a scrap turns the hold into a pinch.
+function startPinch(e) {
+  const d = endDrag();
+  if (d.ghost) {
+    d.ghost.remove();
+    d.el.style.visibility = '';
+  }
+  pinch = {
+    el: d.el,
+    base: find(d.id).size || 1,
+    pts: new Map([[d.pid, [d.lx, d.ly]], [e.pointerId, [e.clientX, e.clientY]]]),
+    k: 1,
+  };
+  pinch.d0 = spread(pinch.pts) || 1;
+  d.el.setPointerCapture?.(e.pointerId);
+  d.el.classList.add('pinching');
+  document.documentElement.classList.add('holding');
+}
+
+function movePinch(e) {
+  pinch.pts.set(e.pointerId, [e.clientX, e.clientY]);
+  pinch.k = clamp(pinch.base * spread(pinch.pts) / pinch.d0, MIN_SIZE, MAX_SIZE) / pinch.base;
+  pinch.el.style.transform = `rotate(var(--r)) scale(${pinch.k})`;
+}
+
+function endPinch(commit) {
+  const p = pinch;
+  pinch = null;
+  document.documentElement.classList.remove('holding');
+  p.el.classList.remove('pinching');
+  p.el.style.transform = '';
+  if (commit && Math.abs(p.k - 1) > 0.02) {
+    setSize(p.el, p.base * p.k);
+    buzz(10);
+  }
+}
+
 document.addEventListener('pointerdown', e => {
+  if (drag && e.pointerId !== drag.pid && e.pointerType === 'touch') {
+    startPinch(e);
+    return;
+  }
   const el = e.target.closest('[data-zone] > .scrap');
-  if (!el || e.button > 0 || drag) return;
+  if (!el || e.button > 0 || drag || pinch || pan) return;
   e.preventDefault();
-  drag = { el, id: el.dataset.id, x0: e.clientX, y0: e.clientY, pid: e.pointerId, ghost: null, hot: null };
+  drag = { el, id: el.dataset.id, x0: e.clientX, y0: e.clientY, lx: e.clientX, ly: e.clientY, pid: e.pointerId, ghost: null, hot: null };
   el.setPointerCapture?.(e.pointerId);
+  // While a scrap is held, a second finger should pinch the scrap, not zoom the page.
+  document.documentElement.classList.add('holding');
 });
 
 document.addEventListener('pointermove', e => {
+  if (pinch?.pts.has(e.pointerId)) {
+    movePinch(e);
+    return;
+  }
   if (!drag || e.pointerId !== drag.pid) return;
+  drag.lx = e.clientX;
+  drag.ly = e.clientY;
   const dx = e.clientX - drag.x0, dy = e.clientY - drag.y0;
   if (!drag.ghost) {
     if (Math.hypot(dx, dy) < 6) return;
@@ -350,6 +540,10 @@ document.addEventListener('pointermove', e => {
 });
 
 document.addEventListener('pointerup', e => {
+  if (pinch?.pts.has(e.pointerId)) {
+    endPinch(true);
+    return;
+  }
   if (!drag || e.pointerId !== drag.pid) return;
   const d = endDrag();
   if (d.ghost) drop(d, targetAt(e.clientX, e.clientY));
@@ -357,10 +551,47 @@ document.addEventListener('pointerup', e => {
 });
 
 document.addEventListener('pointercancel', e => {
+  if (pinch?.pts.has(e.pointerId)) {
+    endPinch(false);
+    return;
+  }
   if (!drag || e.pointerId !== drag.pid) return;
   const d = endDrag();
   d.ghost?.remove();
   d.el.style.visibility = '';
+});
+
+// Chrome reports a trackpad pinch as ctrl + wheel, the same as ctrl + scrolling a
+// mouse: over a scrap, either one resizes it.
+document.addEventListener('wheel', e => {
+  if (!e.ctrlKey) return;
+  const el = e.target.closest?.('[data-zone] > .scrap');
+  if (!el) return;
+  e.preventDefault();
+  setSize(el, (find(el.dataset.id).size || 1) * Math.exp(-e.deltaY * 0.01));
+}, { passive: false });
+
+// Safari reports trackpad pinches as gesture events instead. On touch screens the
+// pointer pinch handles resizing, so there these only stop the page from zooming.
+document.addEventListener('gesturestart', e => {
+  const el = e.target.closest?.('[data-zone] > .scrap');
+  if (drag || pinch || el) e.preventDefault();
+  if (el && navigator.maxTouchPoints === 0) gesture = { el, base: find(el.dataset.id).size || 1, k: 1 };
+});
+document.addEventListener('gesturechange', e => {
+  if (drag || pinch) e.preventDefault();
+  if (!gesture) return;
+  e.preventDefault();
+  gesture.k = clamp(gesture.base * e.scale, MIN_SIZE, MAX_SIZE) / gesture.base;
+  gesture.el.style.transform = `rotate(var(--r)) scale(${gesture.k})`;
+});
+document.addEventListener('gestureend', e => {
+  if (!gesture) return;
+  e.preventDefault();
+  const g = gesture;
+  gesture = null;
+  g.el.style.transform = '';
+  setSize(g.el, g.base * g.k);
 });
 
 function drop(d, target) {
@@ -478,6 +709,7 @@ function openSheet(html, onAct, { tint = '', cls = '' } = {}) {
     <button class="x" type="button" data-act="close" aria-label="Close">×</button>${html}</div>`;
   onSheetAct = onAct;
   if (!sheetDlg.open) sheetDlg.showModal();
+  sketchBoard(sheetDlg);
 }
 
 function closeSheet() {
@@ -527,6 +759,11 @@ function openScrap(id) {
     <p class="eyebrow">${s.zone === 'desk' ? 'STICK IT ON THE BOARD' : 'MOVE IT'}</p>
     <div class="swatches">${ZONES.map(z => `<button class="sw" type="button" style="--c: var(--${z})" data-act="move:${z}"
       aria-label="Move to ${ZONE_INFO[z][0].toLowerCase()}" title="${ZONE_INFO[z][0]}"${z === s.zone ? ' aria-current="true"' : ''}></button>`).join('')}</div>
+    <p class="eyebrow">SIZE</p>
+    <div class="sizer">
+      <button class="mini" type="button" data-act="size:0.8">SMALLER</button>
+      <button class="mini" type="button" data-act="size:1.25">BIGGER</button>
+    </div>
     <button class="btn btn-ghost btn-small" type="button" data-act="toss">CRUMPLE IT</button>`,
   act => scrapAct(s, act), { tint: s.zone });
 
@@ -580,6 +817,9 @@ function scrapAct(s, act) {
     save();
     sheetDirty = true;
     openScrap(s.id);
+  } else if (act.startsWith('size:')) {
+    const el = scrapEl(s.id);
+    if (el) setSize(el, (s.size || 1) * Number(act.slice(5)));
   } else if (act.startsWith('move:')) {
     sheetDirty = false;
     closeSheet();
@@ -672,6 +912,7 @@ function openHelp() {
       <li><i style="--c: var(--yellow)"></i><span><b>YELLOW</b> is procrastination maxing. Be honest about why you're doing it.</span></li>
       <li><i style="--c: var(--red)"></i><span><b>RED</b> is the sirens. Every time you give in, add a tally.</span></li>
       <li><i></i><span>Drop a scrap on <b>THE PILE</b> when it's done, or in the <b>BIN</b> to crumple it.</span></li>
+      <li><i></i><span>Pinch a scrap to make it smaller or bigger. On a computer, hold ctrl and scroll over it.</span></li>
       <li><i></i><span>Tap an empty spot in a square to zoom in. Drag to look around, tap again to zoom out.</span></li>
     </ul>`, null);
 }
@@ -701,9 +942,9 @@ function showLock() {
   const s = find(state.lock?.id);
   if (!s || s.doneAt) { state.lock = null; save(); return; }
   takeover.className = 'takeover lock';
-  takeover.innerHTML = `<div class="takeover-body">
+  takeover.innerHTML = `<div class="takeover-body" tabindex="-1" autofocus>
     <p class="tag big">DOOR LOCKED</p>
-    <div class="scrap hero" style="--r: -2deg"><div class="cut" style="clip-path: ${edge(s.id)}"><span class="ink">${esc(s.text)}</span></div></div>
+    <div class="scrap hero" data-id="${s.id}" style="--r: -2deg"><div class="cut"><span class="ink">${esc(s.text)}</span></div></div>
     ${s.details?.trim() ? `<p class="hero-details">${esc(s.details.trim())}</p>` : ''}
     <p class="clock" id="lock-clock" role="timer" aria-label="Time behind the locked door"></p>
     <p class="scrawl">no calls. no email. no dillydallying.</p>
@@ -713,6 +954,8 @@ function showLock() {
     </div></div>`;
   onTakeoverAct = act => endLock(act === 'finished');
   if (!takeover.open) takeover.showModal();
+  dressScrap($('.hero', takeover));
+  sketchBoard(takeover);
   tick();
   holdWake();
 }
@@ -736,6 +979,7 @@ function openStorm() {
   onTakeoverAct = stormAct;
   renderStorm();
   if (!takeover.open) takeover.showModal();
+  sketchBoard(takeover);
 }
 
 function renderStorm() {
@@ -743,7 +987,7 @@ function renderStorm() {
   const blues = state.scraps.filter(s => s.zone === 'blue' && (!s.doneAt || storm?.done.includes(s.id)));
 
   if (!storm) {
-    takeover.innerHTML = `<div class="takeover-body">
+    takeover.innerHTML = `<div class="takeover-body" tabindex="-1" autofocus>
       <p class="tag big">STORM HOUR</p>
       <p class="scrawl">the stuff you don't want to do but have to. batch it. get thru it.</p>
       <div class="chips">${STORM_CHOICES.map(m => `<button class="chip-btn" type="button" data-act="min:${m}" aria-pressed="${m === stormMinutes}">${m} MiN</button>`).join('')}</div>
@@ -752,11 +996,12 @@ function renderStorm() {
         <button class="btn btn-blue" type="button" data-act="start">START THE STORM</button>
         <button class="btn btn-ghost" type="button" data-act="close">NOT NOW</button>
       </div></div>`;
+    if (takeover.open) sketchBoard(takeover);
     return;
   }
 
   const left = stormLeft();
-  takeover.innerHTML = `<div class="takeover-body">
+  takeover.innerHTML = `<div class="takeover-body" tabindex="-1" autofocus>
     <p class="tag big">STORM HOUR</p>
     <p class="clock" id="storm-clock" role="timer" aria-label="Time left in the storm">${clockHTML(clock(left + 999))}</p>
     ${left <= 0 ? '<p class="scrawl-head">STORM\'S OVER. GO MAKE SOMETHiNG.</p>' : ''}
@@ -767,6 +1012,7 @@ function renderStorm() {
       <button class="btn btn-ghost" type="button" data-act="close">BACK TO THE BOARD</button>
       <button class="btn" type="button" data-act="end">END THE STORM</button>
     </div></div>`;
+  if (takeover.open) sketchBoard(takeover);
 }
 
 function stormAct(act) {
@@ -818,11 +1064,11 @@ function tick() {
   }
   const btn = $('#storm-btn');
   if (!state.storm) {
-    btn.textContent = 'STORM HOUR';
+    setLabel(btn, 'STORM HOUR');
     return;
   }
   const left = stormLeft();
-  btn.textContent = left > 0 ? `STORM ${clock(left + 999)}` : "STORM'S OVER";
+  setLabel(btn, left > 0 ? `STORM ${clock(left + 999)}` : "STORM'S OVER");
   const c = $('#storm-clock');
   if (c) c.innerHTML = clockHTML(clock(left + 999));
   if (left <= 0 && !state.storm.over) {
@@ -1033,6 +1279,7 @@ addEventListener('resize', () => {
   resizeTimer = setTimeout(() => {
     paintDesk();
     if (!drag) render();
+    sketchBoard();
     if (zoomed) zoomTo(zoomed);
   }, 150);
 });
@@ -1045,8 +1292,13 @@ document.addEventListener('visibilitychange', () => {
 
 state = load();
 render();
+sketchBoard();
 paintDesk();
-document.fonts?.ready.then(() => { if (!drag) render(); });
+// The hand lettering changes every label's size once it loads, so redraw the frames.
+document.fonts?.ready.then(() => {
+  if (!drag) render();
+  sketchBoard();
+});
 if (state.lock) showLock();
 tick();
 setInterval(tick, 1000);
