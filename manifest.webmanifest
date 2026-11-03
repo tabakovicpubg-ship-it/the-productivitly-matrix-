@@ -1,0 +1,16 @@
+{
+  "name": "The Productivity Matrix",
+  "short_name": "Matrix",
+  "description": "A messy, handmade 2×2 board for sorting what you want to do from what you should do.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1c1a18",
+  "theme_color": "#1c1a18",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

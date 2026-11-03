@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>The Productivity Matrix</title>
+  <meta name="description" content="A messy, handmade 2×2 board for sorting what you want to do from what you should do.">
+  <meta name="theme-color" content="#1c1a18">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Matrix">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gochi+Hand&family=Permanent+Marker&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <canvas id="desk" aria-hidden="true"></canvas>
+
+  <main class="app">
+    <section class="poster" aria-label="The productivity matrix">
+      <span class="pin tl"></span><span class="pin tr"></span><span class="pin bl"></span><span class="pin br"></span>
+
+      <header class="poster-head">
+        <button class="tag head-btn" id="zoom-out" type="button" aria-label="Back to the whole board" hidden>←<span class="wide-only"> BACK</span></button>
+        <h1 class="title"><span class="the">THE</span> PRODUCTiViTY MATRiX</h1>
+        <button class="tag head-btn" id="help-btn" type="button" aria-label="How it works">?</button>
+      </header>
+
+      <div class="grid-view" id="grid-view">
+        <div class="grid" id="grid">
+          <div class="quad" data-zone="red" aria-label="Red: want to do, unproductive">
+            <div class="corner tl"><p class="note">things i want to do but should absolutely <b>NOT</b> do</p></div>
+          </div>
+          <div class="quad" data-zone="green" aria-label="Green: want to do, productive">
+            <div class="corner tr"><p class="note">things i want to do and absolutely <b>SHOULD</b> do</p></div>
+          </div>
+          <div class="quad" data-zone="yellow" aria-label="Yellow: don't want to do, unproductive">
+            <div class="corner bl"><p class="note">things i don't want or need to do but do <b>ANYWAY</b></p></div>
+          </div>
+          <div class="quad" data-zone="blue" aria-label="Blue: don't want to do, productive">
+            <button class="tag storm-btn" id="storm-btn" type="button">STORM HOUR</button>
+            <div class="corner br"><p class="note">things i don't want to do but <b>HAVE</b> to do</p></div>
+          </div>
+
+          <span class="tape t1"></span><span class="tape t2"></span><span class="tape t3"></span>
+          <span class="tape t4"></span><span class="tape t5"></span>
+
+          <span class="tag axis want">WANT to DO</span>
+          <span class="tag axis dont">DON'T WANT to DO</span>
+          <span class="tag axis unprod">UNPRODUCTiVE</span>
+          <span class="tag axis prod">PRODUCTiVE</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="desk" aria-label="Your desk">
+      <form class="write" id="write-form" autocomplete="off">
+        <label class="sr-only" for="write-input">New scrap</label>
+        <input class="write-input" id="write-input" maxlength="40" placeholder="write it on a scrap…" enterkeyhint="done">
+        <button class="tag stick" type="submit">STICK IT</button>
+      </form>
+
+      <div class="desk-row">
+        <button class="bin" id="bin" type="button" aria-label="Bin. Drop a scrap here to crumple it.">
+          <svg viewBox="0 0 48 56" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5.5 12.8 C16 11.6 30 12.4 42.5 11.4"/>
+            <path d="M18 12 C17.6 6.8 30.4 6.4 30 11.8"/>
+            <path d="M8.8 16.4 L13.2 51 C20 51.8 28 51.4 35.6 51.6 L40.2 15.8"/>
+            <path d="M17.2 21 L19 46.2"/>
+            <path d="M24.6 20.6 L24.3 46.6"/>
+            <path d="M32 20.8 L29.8 46"/>
+          </svg>
+          <span>BIN</span>
+        </button>
+        <div class="desk-zone" data-zone="desk" aria-label="Loose scraps on your desk"></div>
+        <button class="pile" id="pile-btn" type="button" aria-label="The pile of finished things">
+          <span class="pile-sheets"><i></i><i></i><i id="pile-count">0</i></span>
+          <span class="pile-label">THE PILE</span>
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <dialog class="sheet" id="sheet"></dialog>
+  <dialog class="takeover" id="takeover"></dialog>
+  <div class="toast" id="toast" popover="manual" role="status" aria-live="polite"></div>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>
