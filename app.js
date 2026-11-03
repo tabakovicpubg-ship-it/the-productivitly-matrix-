@@ -23,6 +23,10 @@ const toastEl = $('#toast');
 
 let state;
 let zoomed = null;
+let cam = null; // { s, tx, ty } while zoomed in
+let pan = null;
+let panMoved = false;
+let glide = 0;
 let drag = null;
 let stormMinutes = 45;
 let wake = null;
@@ -128,15 +132,16 @@ function render() {
 function buildScrap(s) {
   const el = document.createElement('div');
   const today = s.zone === 'red' ? talliesToday(s) : 0;
-  el.className = 'scrap';
+  const hasDetails = Boolean(s.details?.trim());
+  el.className = `scrap${hasDetails ? ' has-details' : ''}`;
   el.dataset.id = s.id;
   el.tabIndex = 0;
   el.setAttribute('role', 'button');
-  el.setAttribute('aria-label', `${s.text}${today ? `, gave in ${today} time${today === 1 ? '' : 's'} today` : ''}`);
+  el.setAttribute('aria-label', `${s.text}${today ? `, gave in ${today} time${today === 1 ? '' : 's'} today` : ''}${hasDetails ? ', has details' : ''}`);
   el.style.setProperty('--r', `${s.r}deg`);
   el.style.left = `${s.x * 100}%`;
   el.style.top = `${s.y * 100}%`;
-  el.innerHTML = `<div class="cut" style="clip-path: ${edge(s.id)}"><span class="ink">${esc(s.text)}${
+  el.innerHTML = `<div class="cut" style="clip-path: ${edge(s.id, hasDetails)}"><span class="ink">${esc(s.text)}${
     s.zone === 'blue' && s.delegate ? '<span class="flag">DELEGATE?</span>' : ''}${
     today ? `<span class="tally">${tallyMarks(today, s.id)}</span>` : ''}</span></div>`;
   return el;
@@ -151,11 +156,14 @@ function fit(el) {
   el.style.top = `${Math.min(s.y, maxY) * 100}%`;
 }
 
-// Slightly uneven scissor cuts.
-function edge(id) {
+// Slightly uneven scissor cuts. Scraps with details get a folded-down corner.
+function edge(id, dogEar = false) {
   const r = rng(hash(id) ^ 0x9e37);
-  const j = () => Math.round(r() * 4);
-  return `polygon(${j()}px ${j()}px, calc(100% - ${j()}px) ${j()}px, calc(100% - ${j()}px) calc(100% - ${j()}px), ${j()}px calc(100% - ${j()}px))`;
+  const [a, b, c, d, e, f, g, h] = Array.from({ length: 8 }, () => Math.round(r() * 4));
+  const corner = dogEar
+    ? `calc(100% - ${e}px) calc(100% - 13px), calc(100% - 13px) calc(100% - ${f}px)`
+    : `calc(100% - ${e}px) calc(100% - ${f}px)`;
+  return `polygon(${a}px ${b}px, calc(100% - ${c}px) ${d}px, ${corner}, ${g}px calc(100% - ${h}px))`;
 }
 
 // Hand-drawn tally marks in groups of five.
@@ -195,23 +203,84 @@ function callout(id) {
 
 /* ---------- zooming into a quadrant ---------- */
 
+// Like leaning in to a real board: the frame stays put on the desk and the whole
+// poster (title, edges, pins, tape) is magnified underneath it.
 function zoomTo(zone) {
-  const grid = $('#grid'), view = $('#grid-view');
+  const lens = $('#lens'), poster = $('#poster');
+  cancelAnimationFrame(glide);
+  poster.classList.remove('panning');
   zoomed = zone;
   $('#zoom-out').hidden = !zone;
   if (!zone) {
     // Keep clipping until the camera has pulled all the way back.
-    grid.style.transform = '';
-    if (reducedMotion()) view.classList.remove('zoomed');
+    cam = null;
+    poster.style.transform = '';
+    if (reducedMotion()) lens.classList.remove('zoomed');
     return;
   }
   const quad = $(`.quad[data-zone="${zone}"]`);
-  const W = grid.offsetWidth, H = grid.offsetHeight, qw = quad.offsetWidth, qh = quad.offsetHeight;
-  const s = Math.min(W / qw, H / qh);
-  const tx = -quad.offsetLeft * s + (W - qw * s) / 2;
-  const ty = -quad.offsetTop * s + (H - qh * s) / 2;
-  grid.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`;
-  view.classList.add('zoomed');
+  const W = poster.offsetWidth, H = poster.offsetHeight, qw = quad.offsetWidth, qh = quad.offsetHeight;
+  let qx = 0, qy = 0;
+  for (let n = quad; n && n !== poster; n = n.offsetParent) { qx += n.offsetLeft; qy += n.offsetTop; }
+  cam = { s: Math.min(W / qw, H / qh) * 0.94 };
+  aim(W / 2 - (qx + qw / 2) * cam.s, H / 2 - (qy + qh / 2) * cam.s, true);
+  lens.classList.add('zoomed');
+}
+
+// Point the camera, never letting the poster's edge come inside the frame.
+// Without `smooth` it follows the finger exactly, with no easing.
+function aim(tx, ty, smooth) {
+  const poster = $('#poster'), W = poster.offsetWidth, H = poster.offsetHeight;
+  cam.tx = clamp(tx, W - W * cam.s, 0);
+  cam.ty = clamp(ty, H - H * cam.s, 0);
+  poster.classList.toggle('panning', !smooth);
+  poster.style.transform = `translate(${cam.tx}px, ${cam.ty}px) scale(${cam.s})`;
+}
+
+/* ---------- moving around while zoomed in ---------- */
+
+function startPan(e) {
+  if (!cam || e.button > 0 || e.target.closest('.scrap, button')) return;
+  cancelAnimationFrame(glide);
+  panMoved = false;
+  pan = { pid: e.pointerId, x0: e.clientX, y0: e.clientY, tx: cam.tx, ty: cam.ty, lx: e.clientX, ly: e.clientY, lt: e.timeStamp, vx: 0, vy: 0, moved: false };
+  e.currentTarget.setPointerCapture(e.pointerId);
+}
+
+function movePan(e) {
+  if (!pan || e.pointerId !== pan.pid) return;
+  const dx = e.clientX - pan.x0, dy = e.clientY - pan.y0;
+  if (!pan.moved) {
+    if (Math.hypot(dx, dy) < 6) return;
+    pan.moved = true;
+    $('#lens').classList.add('grabbing');
+  }
+  const dt = Math.max(1, e.timeStamp - pan.lt);
+  pan.vx = (e.clientX - pan.lx) / dt;
+  pan.vy = (e.clientY - pan.ly) / dt;
+  Object.assign(pan, { lx: e.clientX, ly: e.clientY, lt: e.timeStamp });
+  aim(pan.tx + dx, pan.ty + dy, false);
+}
+
+function endPan(e) {
+  if (!pan || e.pointerId !== pan.pid) return;
+  const p = pan;
+  pan = null;
+  $('#lens').classList.remove('grabbing');
+  if (!p.moved) return; // just a tap: the click handler zooms back out
+  panMoved = true; // swallow the click that follows a drag
+  if (e.type === 'pointercancel' || e.timeStamp - p.lt > 80 || reducedMotion()) return;
+
+  // A flick keeps the board sliding for a moment, like it has some weight.
+  let vx = p.vx * 16, vy = p.vy * 16;
+  const coast = () => {
+    vx *= 0.92;
+    vy *= 0.92;
+    if (!cam || Math.hypot(vx, vy) < 0.3) return;
+    aim(cam.tx + vx, cam.ty + vy, false);
+    glide = requestAnimationFrame(coast);
+  };
+  glide = requestAnimationFrame(coast);
 }
 
 /* ---------- dragging scraps around ---------- */
@@ -452,6 +521,7 @@ function openScrap(id) {
   openSheet(`
     <p class="eyebrow">${name} · ${esc(line)}</p>
     <input class="edit" value="${esc(s.text)}" maxlength="40" aria-label="What the scrap says" enterkeyhint="done">
+    <textarea class="details" maxlength="2000" rows="2" aria-label="Details" placeholder="add details… notes, links, the next step">${esc(s.details || '')}</textarea>
     <p class="meta">${meta.join(' · ')}</p>
     ${actions ? `<div class="actions">${actions}</div>` : ''}
     <p class="eyebrow">${s.zone === 'desk' ? 'STICK IT ON THE BOARD' : 'MOVE IT'}</p>
@@ -466,6 +536,20 @@ function openScrap(id) {
     if (text) { s.text = text; save(); sheetDirty = true; }
   });
   input.addEventListener('keydown', e => { if (e.key === 'Enter') closeSheet(); });
+
+  // The details page grows with what you write.
+  const details = $('.details', sheetDlg);
+  const grow = () => {
+    details.style.height = 'auto';
+    details.style.height = `${details.scrollHeight}px`;
+  };
+  details.addEventListener('input', () => {
+    s.details = details.value;
+    save();
+    sheetDirty = true;
+    grow();
+  });
+  grow();
 }
 
 function scrapAct(s, act) {
@@ -588,7 +672,7 @@ function openHelp() {
       <li><i style="--c: var(--yellow)"></i><span><b>YELLOW</b> is procrastination maxing. Be honest about why you're doing it.</span></li>
       <li><i style="--c: var(--red)"></i><span><b>RED</b> is the sirens. Every time you give in, add a tally.</span></li>
       <li><i></i><span>Drop a scrap on <b>THE PILE</b> when it's done, or in the <b>BIN</b> to crumple it.</span></li>
-      <li><i></i><span>Tap an empty spot in a square to zoom in on it.</span></li>
+      <li><i></i><span>Tap an empty spot in a square to zoom in. Drag to look around, tap again to zoom out.</span></li>
     </ul>`, null);
 }
 
@@ -620,6 +704,7 @@ function showLock() {
   takeover.innerHTML = `<div class="takeover-body">
     <p class="tag big">DOOR LOCKED</p>
     <div class="scrap hero" style="--r: -2deg"><div class="cut" style="clip-path: ${edge(s.id)}"><span class="ink">${esc(s.text)}</span></div></div>
+    ${s.details?.trim() ? `<p class="hero-details">${esc(s.details.trim())}</p>` : ''}
     <p class="clock" id="lock-clock" role="timer" aria-label="Time behind the locked door"></p>
     <p class="scrawl">no calls. no email. no dillydallying.</p>
     <div class="actions">
@@ -895,14 +980,30 @@ $('#write-form').addEventListener('submit', e => {
   input.value = '';
 });
 
-$('#grid').addEventListener('click', e => {
+$('#lens').addEventListener('pointerdown', startPan);
+$('#lens').addEventListener('pointermove', movePan);
+$('#lens').addEventListener('pointerup', endPan);
+$('#lens').addEventListener('pointercancel', endPan);
+
+// Two-finger trackpad swipes and the mouse wheel move around too.
+$('#lens').addEventListener('wheel', e => {
+  if (!cam || e.ctrlKey) return; // ctrl+wheel is the browser's own pinch zoom
+  e.preventDefault();
+  cancelAnimationFrame(glide);
+  const unit = e.deltaMode === 1 ? 16 : 1;
+  aim(cam.tx - e.deltaX * unit, cam.ty - e.deltaY * unit, false);
+}, { passive: false });
+
+$('#lens').addEventListener('click', e => {
+  if (panMoved) { panMoved = false; return; }
   if (e.target.closest('.scrap, button')) return;
+  if (zoomed) { zoomTo(null); return; }
   const quad = e.target.closest('.quad');
-  if (quad) zoomTo(zoomed ? null : quad.dataset.zone);
+  if (quad) zoomTo(quad.dataset.zone);
 });
 
-$('#grid').addEventListener('transitionend', e => {
-  if (e.target === e.currentTarget && !zoomed) $('#grid-view').classList.remove('zoomed');
+$('#poster').addEventListener('transitionend', e => {
+  if (e.target === e.currentTarget && !zoomed) $('#lens').classList.remove('zoomed');
 });
 $('#zoom-out').addEventListener('click', () => zoomTo(null));
 $('#help-btn').addEventListener('click', openHelp);
@@ -918,6 +1019,11 @@ document.addEventListener('keydown', e => {
     openScrap(el.dataset.id);
   } else if (e.key === 'Escape' && zoomed) {
     zoomTo(null);
+  } else if (cam && e.key.startsWith('Arrow') && !e.target.closest?.('input, textarea')) {
+    e.preventDefault();
+    const step = 90;
+    const [dx, dy] = { ArrowLeft: [step, 0], ArrowRight: [-step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] }[e.key];
+    aim(cam.tx + dx, cam.ty + dy, true);
   }
 });
 

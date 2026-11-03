@@ -22,16 +22,15 @@
   <canvas id="desk" aria-hidden="true"></canvas>
 
   <main class="app">
-    <section class="poster" aria-label="The productivity matrix">
-      <span class="pin tl"></span><span class="pin tr"></span><span class="pin bl"></span><span class="pin br"></span>
+    <div class="lens" id="lens">
+      <section class="poster" id="poster" aria-label="The productivity matrix">
+        <span class="pin tl"></span><span class="pin tr"></span><span class="pin bl"></span><span class="pin br"></span>
 
-      <header class="poster-head">
-        <button class="tag head-btn" id="zoom-out" type="button" aria-label="Back to the whole board" hidden>←<span class="wide-only"> BACK</span></button>
-        <h1 class="title"><span class="the">THE</span> PRODUCTiViTY MATRiX</h1>
-        <button class="tag head-btn" id="help-btn" type="button" aria-label="How it works">?</button>
-      </header>
+        <header class="poster-head">
+          <h1 class="title"><span class="the">THE</span> PRODUCTiViTY MATRiX</h1>
+          <button class="tag head-btn" id="help-btn" type="button" aria-label="How it works">?</button>
+        </header>
 
-      <div class="grid-view" id="grid-view">
         <div class="grid" id="grid">
           <div class="quad" data-zone="red" aria-label="Red: want to do, unproductive">
             <div class="corner tl"><p class="note">things i want to do but should absolutely <b>NOT</b> do</p></div>
@@ -55,8 +54,9 @@
           <span class="tag axis unprod">UNPRODUCTiVE</span>
           <span class="tag axis prod">PRODUCTiVE</span>
         </div>
-      </div>
-    </section>
+      </section>
+      <button class="tag lens-back" id="zoom-out" type="button" aria-label="Back to the whole board" hidden>←<span class="wide-only"> BACK</span></button>
+    </div>
 
     <section class="desk" aria-label="Your desk">
       <form class="write" id="write-form" autocomplete="off">
